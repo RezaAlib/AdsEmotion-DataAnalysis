@@ -33,10 +33,10 @@ library(Hmisc)
 library(kableExtra)
 
 
-setwd("C:/Users/reza.alibakhshi/iCloudDrive/Research Projects and Activities/Research Projects/UGC - Ads Emotion/Data")
+setwd("C:/Users/reza.alibakhshi/Dropbox/Research Projects and Activities/Research Projects/UGC - Ads Emotion/Data")
 pdf<-read.csv("AdsPanelData.csv" , header = T ,stringsAsFactors=FALSE)
 ads<-read.csv("AdsAnalysis.csv" , header = T ,stringsAsFactors=FALSE)
-
+audioDF<-read.csv("audio_properties.csv", stringsAsFactors = FALSE)
 
 ########********** Phase 1 - Variables Descriptions **********############
 ads$fileId <- paste(ads$profile_name,'/',str_replace(substr(ads$video_name, 0, nchar(ads$video_name)),'mp4','json'),sep = "") # creating new file if for matching with panel data
@@ -88,7 +88,7 @@ pdf$ageofvideo <- as.numeric(difftime(as.Date(pdf$collected_date), as.Date(pdf$v
 
 
 
-### Adding additional video production quality measures as contro variables
+### Adding additional video production quality measures as control variables
 # Read the CSV file
 vidquality <- read.csv("video_properties.csv")
 
@@ -140,6 +140,93 @@ pdf_videoquality[columns] <- data.frame(sapply(pdf_videoquality[columns], replac
 pdf<-pdf_videoquality
 
 
+############### Updating AUdio variables for MISQ R1 ################
+
+# Columns to convert
+columns_to_convert <- c("pitch", "tempo", "hnr" , "loudness", "spectral_centroid")
+
+# Convert selected columns to numeric and replace NA with 0
+for (col in columns_to_convert) {
+  audioDF[[col]] <- as.numeric(gsub("NA", NA, audioDF[[col]]))  # Convert "NA" strings to actual NA values before conversion
+  audioDF[[col]][is.na(audioDF[[col]])] <- 0  # Replace NA with 0
+}
+
+
+# Create a new column in audioDF that combines company_name and videofile
+audioDF$fileId <- paste(audioDF$company_name, audioDF$video_file, sep = "/")
+# Select the columns to merge
+columns_to_merge <- c("transcript", "pitch", "tempo", "hnr", "loudness", "spectral_centroid")
+# Merge the data frames
+merged_df <- merge(pdf, audioDF[, c("fileId", columns_to_merge)], by = "fileId", all.x = TRUE)
+pdf<-merged_df
+
+#new audiovisual alignment
+pdf$AV_alignment_3 <- pdf$VEV_happiness_3-pdf$TEV_happiness_3
+pdf$AV_alignment <- pdf$VEV_happiness-pdf$TEV_happiness
+
+
+
+
+
+###########adding entity analysis for product type etc ############
+library(dplyr)
+library(spacyr)
+# Initialize spaCy
+spacy_initialize(model = "en_core_web_sm")
+
+# Extract entities from captions
+pdf$caption_entities <- lapply(pdf$caption, function(caption) {
+  parsed <- spacy_parse(caption)
+  entities <- entity_extract(parsed)
+  return(entities$entity)
+  })
+
+
+# Extract entities from transcripts
+pdf$transcript_entities <- lapply(pdf$transcript, function(transcript) {
+  parsed <- spacy_parse(transcript)
+  entities <- entity_extract(parsed)
+  return(unique(entities$entity))
+  })
+
+
+# Combine caption and transcript entities
+pdf$combined_entities <- mapply(function(caption_ent, transcript_ent) {
+  unique(c(caption_ent, transcript_ent))
+}, pdf$caption_entities, pdf$transcript_entities, SIMPLIFY = FALSE)
+
+
+# Add company_name column and sort
+pdf <- pdf %>%
+  mutate(company_name = sapply(strsplit(fileId, "/"), `[`, 1)) %>%
+  arrange(company_name, video_creation_date)
+
+# Initialize lists for previous and new entities
+pdf$previous_entities <- vector("list", nrow(pdf))
+pdf$new_entities <- vector("list", nrow(pdf))
+
+
+
+
+for (i in seq_len(nrow(pdf))) {
+  current_company <- pdf$company_name[i]
+  current_entities <- unique(pdf$combined_entities[[i]])
+  print(current_company)
+  if (i > 1) {
+    print(i)
+    previous_entities_list <- pdf$combined_entities[1:(i-1)][pdf$company_name[1:(i-1)] == current_company]
+  } else {
+    previous_entities_list <- list()
+  }
+  
+  pdf$previous_entities[[i]] <- previous_entities_list
+  previous_entities <- unique(unlist(previous_entities_list))
+  pdf$new_entities[[i]] <- setdiff(current_entities, previous_entities)
+}
+
+
+pdf$content_dissimilarity <- sapply(pdf$new_entities, length)
+
 
 ############################################################
 ## New Version of the Study with Cross-sectional analysis ##
@@ -159,6 +246,9 @@ summarydata<-pdfCross[c('video_view_count','like_count',
                    'FSE_happiness','LSE_happiness','initialAVG_happiness','overallAVG_happiness','initialTGR_happiness','overallTGR_happiness',
                    'caption_happiness','caption_surprise','caption_anger','caption_fear','caption_sadness','video_duration','has_audio',
                    'location.has_public_page','viewer_can_reshare',
+                   "AV_alignment_3" , "AV_alignment",
+                   "pitch" , "tempo" , "hnr" , "loudness" , "spectral_centroid",
+                   "content_dissimilarity",
                    "ageofvideo",
                    "resolution", "aspect_ratio", "frame_rate",
                    "average_contrast", "average_brightness", "average_saturation",
@@ -196,6 +286,9 @@ pdf2<-pdfCross[c('profile_name','fileId','collected_date', 'video_view_count','l
             'caption_happiness','caption_surprise','caption_anger','caption_fear','caption_sadness','video_duration','has_audio',
             'location.has_public_page','viewer_can_reshare','followed_by_count','edge_follow_count','brandFE','IndustryFE','video_creation_date',
             'ind_cluster_id','glb_cluster_id',
+            "AV_alignment_3" , "AV_alignment",
+            "pitch" , "tempo" , "hnr" , "loudness" , "spectral_centroid",
+            "content_dissimilarity",
             "ageofvideo",
             "resolution", "aspect_ratio", "frame_rate",
             "average_contrast", "average_brightness", "average_saturation",
@@ -209,6 +302,9 @@ model_view_main <- glm.nb(video_view_count ~ followed_by_count
                           +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
                           +initialpeak_happiness_mag+initialpeak_happiness_dur
                           +FSE_happiness
+                          +AV_alignment_3
+                          +pitch + tempo + hnr + loudness + spectral_centroid
+                          +content_dissimilarity
                           +brandFE
                           +has_audio+location.has_public_page
                           +viewer_can_reshare
@@ -227,6 +323,9 @@ model_like_main <- glm.nb(like_count ~ followed_by_count
                           +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
                           +overallpeak_happiness_mag+overallpeak_happiness_dur
                           +LSE_happiness
+                          +AV_alignment
+                          +pitch + tempo + hnr + loudness + spectral_centroid
+                          +content_dissimilarity
                           +brandFE
                           +has_audio+location.has_public_page
                           +viewer_can_reshare
@@ -242,6 +341,7 @@ summary(model_view_main)
 summary(model_like_main)
 stargazer(model_view_main,model_like_main, type = 'text')
 
+
 ## test of overdispersion for poisson alternative
 library(AER)
 poissonview<- glm(video_view_count ~ followed_by_count
@@ -249,6 +349,9 @@ poissonview<- glm(video_view_count ~ followed_by_count
                   +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
                   +initialpeak_happiness_mag+initialpeak_happiness_dur
                   +FSE_happiness
+                  +AV_alignment_3
+                  +pitch + tempo + hnr + loudness + spectral_centroid
+                  +content_dissimilarity
                   +brandFE
                   +has_audio+location.has_public_page
                   +viewer_can_reshare
@@ -266,6 +369,9 @@ poissonlike<- glm(like_count ~ followed_by_count
                   +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
                   +overallpeak_happiness_mag+overallpeak_happiness_dur
                   +LSE_happiness
+                  +AV_alignment
+                  +pitch + tempo + hnr + loudness + spectral_centroid
+                  +content_dissimilarity
                   +brandFE
                   +has_audio+location.has_public_page
                   +viewer_can_reshare
@@ -285,12 +391,153 @@ dispersiontest(poissonlike)
 
 
 
+
+#########################################################
+################ Post-Hoc analyses ######################
+#########################################################
+
+##Analyzing Comments Engagement
+model_comment_main <- glm.nb(comment_count ~ followed_by_count 
+                          +VEV_happiness 
+                          +VEV_surprise+VEV_anger+VEV_fear+VEV_sadness 
+                          +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
+                          +overallpeak_happiness_mag+overallpeak_happiness_dur
+                          +LSE_happiness
+                          +AV_alignment
+                          +pitch + tempo + hnr + loudness + spectral_centroid
+                          +content_dissimilarity
+                          +brandFE
+                          +has_audio+location.has_public_page
+                          +viewer_can_reshare
+                          +ageofvideo
+                          +log(resolution) + aspect_ratio 
+                          + average_contrast + average_brightness 
+                          + average_saturation + average_blue_yellow_ratio + average_red_cyan_ratio
+                          + temporal_consistency  
+                          + average_optical_flow_magnitude + average_optical_flow_magnitude
+                          ,data = pdfCross)
+
+stargazer(model_comment_main, type = 'text')
+
+
+
+## Analyzing More Cognitively Demanding Inertia 
+model_view_EI <- glm.nb(video_view_count ~ followed_by_count
+                          +VEI_happiness_3
+                          +VEV_happiness_3
+                          +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
+                          +initialpeak_happiness_mag+initialpeak_happiness_dur
+                          +FSE_happiness
+                          +AV_alignment_3
+                          +pitch + tempo + hnr + loudness + spectral_centroid
+                          +content_dissimilarity
+                          +brandFE
+                          +has_audio+location.has_public_page
+                          +viewer_can_reshare
+                          +ageofvideo
+                          +log(resolution+1) + aspect_ratio + frame_rate
+                          + average_contrast + average_brightness 
+                          + average_saturation + average_blue_yellow_ratio + average_red_cyan_ratio
+                          + temporal_consistency  
+                          + average_optical_flow_magnitude + average_optical_flow_magnitude
+                          ,data = pdfCross)
+
+
+model_like_EI <- glm.nb(like_count ~ followed_by_count 
+                          +VEI_happiness
+                          +VEV_happiness 
+                          +VEV_surprise+VEV_anger+VEV_fear+VEV_sadness 
+                          +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
+                          +overallpeak_happiness_mag+overallpeak_happiness_dur
+                          +LSE_happiness
+                          +AV_alignment
+                          +pitch + tempo + hnr + loudness + spectral_centroid
+                          +content_dissimilarity
+                          +brandFE
+                          +has_audio+location.has_public_page
+                          +viewer_can_reshare
+                          +ageofvideo
+                          +log(resolution) + aspect_ratio 
+                          + average_contrast + average_brightness 
+                          + average_saturation + average_blue_yellow_ratio + average_red_cyan_ratio
+                          + temporal_consistency  
+                          + average_optical_flow_magnitude + average_optical_flow_magnitude
+                          ,data = pdfCross)
+
+
+stargazer(model_view_EI,model_like_EI, type = 'text')
+
+
+
 #########################################################
 ################ Robustness analyses ####################
 #########################################################
 
+############################################### SUR ################################################
+###### Doing SUR by Accounting for All variables in the both models and Controlling for Other Happiness 
+library(systemfit)
+pdfSUR<-pdf2
+pdfSUR$log_like_count<-log(pdfSUR$like_count)
+pdfSUR$log_video_view_count<-log(pdfSUR$video_view_count)
+pdfSUR$brandFE <- as.numeric(as.factor(pdfSUR$brandFE))
+pdfSUR$has_audio <- as.numeric(as.factor(pdfSUR$has_audio))
+pdfSUR$location.has_public_page <- as.numeric(as.factor(pdfSUR$location.has_public_page))
+pdfSUR$viewer_can_reshare <- as.numeric(as.factor(pdfSUR$viewer_can_reshare))
 
-################################################ Tests 1 ##########################################
+
+# Define the equations for the SUR model
+eq1 <- (log_video_view_count ~  log(followed_by_count)
+        +VEV_happiness_3
+        +VEV_happiness
+        +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
+        +VEV_surprise+VEV_anger+VEV_fear+VEV_sadness
+        +TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
+        +initialpeak_happiness_mag+initialpeak_happiness_dur
+        +overallpeak_happiness_mag+overallpeak_happiness_dur
+        +FSE_happiness + LSE_happiness
+        +AV_alignment
+        + pitch + tempo + hnr + loudness + spectral_centroid
+        + content_dissimilarity 
+        + brandFE 
+        + has_audio + location.has_public_page+ viewer_can_reshare 
+        + ageofvideo + log(resolution+1) + aspect_ratio + frame_rate
+        + average_contrast + average_brightness + average_saturation
+        + average_blue_yellow_ratio + average_red_cyan_ratio
+        + temporal_consistency + average_optical_flow_magnitude + average_optical_flow_magnitude)
+
+eq2 <- (log_like_count ~ log(followed_by_count)
+        +VEV_happiness_3
+        +VEV_happiness
+        +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
+        +VEV_surprise+VEV_anger+VEV_fear+VEV_sadness
+        +TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
+        +initialpeak_happiness_mag+initialpeak_happiness_dur
+        +overallpeak_happiness_mag+overallpeak_happiness_dur
+        +FSE_happiness +LSE_happiness
+        +AV_alignment
+        + pitch + tempo + hnr + loudness + spectral_centroid
+        + content_dissimilarity 
+        + brandFE 
+        + has_audio + location.has_public_page + viewer_can_reshare 
+        + ageofvideo + log(resolution) + aspect_ratio
+        + average_contrast + average_brightness + average_saturation
+        + average_blue_yellow_ratio + average_red_cyan_ratio
+        + temporal_consistency + average_optical_flow_magnitude + average_optical_flow_magnitude)
+
+# Combine equations into a list
+system <- list(view = eq1, like = eq2)
+
+# Fit the SUR model
+fit <- systemfit(system, method = "SUR", data = pdfSUR)
+
+# Summary of the fit
+summary(fit)
+
+
+
+
+
+################################################ Tests 2 ##########################################
 ########## Heterogenous Effects of Happiness Variability in Short and Long-Format Videos  #########
 durmodel_like <- glm.nb(like_count ~ followed_by_count 
                         +VEV_happiness*video_duration
@@ -298,6 +545,9 @@ durmodel_like <- glm.nb(like_count ~ followed_by_count
                         +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
                         +overallpeak_happiness_mag+overallpeak_happiness_dur
                         +LSE_happiness
+                        +AV_alignment
+                        +pitch + tempo + hnr + loudness + spectral_centroid
+                        +content_dissimilarity
                         +brandFE
                         +has_audio+location.has_public_page
                         +viewer_can_reshare
@@ -332,6 +582,9 @@ Qmodel_view <- glm.nb(video_view_count ~ followed_by_count #time_varying variabl
                       +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3 #time_invariant controls
                       +initialpeak_happiness_mag+initialpeak_happiness_dur
                       +FSE_happiness
+                      +AV_alignment_3
+                      +pitch + tempo + hnr + loudness + spectral_centroid
+                      +content_dissimilarity
                       +brandFE
                       +has_audio+location.has_public_page
                       +viewer_can_reshare
@@ -349,6 +602,9 @@ Qmodel_like <- glm.nb(like_count ~ followed_by_count #time_varying variables. Yo
                       +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
                       +overallpeak_happiness_mag+overallpeak_happiness_dur
                       +LSE_happiness
+                      +AV_alignment
+                      +pitch + tempo + hnr + loudness + spectral_centroid
+                      +content_dissimilarity
                       +brandFE
                       +has_audio+location.has_public_page
                       +viewer_can_reshare
@@ -434,8 +690,8 @@ ungroup()
 # }
 
 # replace NA with 0
-pdf2$lagged_VEV_happiness_3[is.na(pdf2$lagged_VEV_happiness_3)] <- 0
-pdf2$lagged_VEV_happiness[is.na(pdf2$lagged_VEV_happiness)] <- 0
+# pdf2$lagged_VEV_happiness_3[is.na(pdf2$lagged_VEV_happiness_3)] <- 0
+# pdf2$lagged_VEV_happiness[is.na(pdf2$lagged_VEV_happiness)] <- 0
 pdf2$avg_VEV_happiness_3_other_profiles_prior[is.na(pdf2$avg_VEV_happiness_3_other_profiles_prior)] <- 0
 pdf2$avg_VEV_happiness_other_profiles_prior[is.na(pdf2$avg_VEV_happiness_other_profiles_prior)] <- 0
 pdf2$avg_VEV_happiness_3_other_profiles_month[is.na(pdf2$avg_VEV_happiness_3_other_profiles_month)] <- 0
@@ -444,9 +700,9 @@ pdf2$avg_VEV_happiness_other_profiles_month[is.na(pdf2$avg_VEV_happiness_other_p
 
 
 # First stage 
-FirstStage.initial <- lm(VEV_happiness_3 ~ lagged_VEV_happiness_3+avg_VEV_happiness_3_other_profiles_month+profile_name
+FirstStage.initial <- lm(VEV_happiness_3 ~ avg_VEV_happiness_3_other_profiles_month+profile_name
                           ,data = pdf2)
-FirstStage.overall <- lm(VEV_happiness~ lagged_VEV_happiness+avg_VEV_happiness_other_profiles_month+profile_name,data = pdf2)
+FirstStage.overall <- lm(VEV_happiness~ avg_VEV_happiness_other_profiles_month+profile_name,data = pdf2)
 summary(FirstStage.initial)
 summary(FirstStage.overall)
 
@@ -466,6 +722,9 @@ CFmodel_view <- glm.nb(video_view_count ~ followed_by_count
                        +VEV_surprise_3+VEV_anger_3+VEV_fear_3+VEV_sadness_3
                        +initialpeak_happiness_mag+initialpeak_happiness_dur
                        +FSE_happiness
+                       +AV_alignment_3
+                       +pitch + tempo + hnr + loudness + spectral_centroid
+                       +content_dissimilarity
                        #+brandFE this is not necessary as we include it in the first stage
                        +has_audio+location.has_public_page
                        +viewer_can_reshare
@@ -485,6 +744,9 @@ CFmodel_like <- glm.nb(like_count ~ followed_by_count
                        +TEV_happiness+TEV_surprise+TEV_anger+TEV_fear+TEV_sadness
                        +overallpeak_happiness_mag+overallpeak_happiness_dur
                        +LSE_happiness
+                       +AV_alignment
+                       +pitch + tempo + hnr + loudness + spectral_centroid
+                       +content_dissimilarity
                        #+brandFE this is not necessary as we include it in the first stage
                        +has_audio+location.has_public_page
                        +viewer_can_reshare
@@ -506,9 +768,25 @@ stargazer(CFmodel_view,CFmodel_like,type = 'text')
 
 library(AER)
 # First stage 
-IVModel.initial <- ivreg(log(video_view_count+1) ~ VEV_happiness_3|lagged_VEV_happiness_3+avg_VEV_happiness_3_other_profiles_month+profile_name,
+IVModel.initial <- ivreg(log(video_view_count+1) ~ VEV_happiness_3|avg_VEV_happiness_3_other_profiles_month+profile_name,
                             data = pdf2)
-IVModel.overall <- ivreg(log(like_count) ~ VEV_happiness|lagged_VEV_happiness+avg_VEV_happiness_other_profiles_month+profile_name,
+IVModel.overall <- ivreg(log(like_count) ~ VEV_happiness|avg_VEV_happiness_other_profiles_month+profile_name,
                             data = pdf2)
 summary(IVModel.initial,diagnostics = TRUE) #if Wu-Hausman is significant it means that instrument is not weak
 summary(IVModel.overall,diagnostics = TRUE) #if Wu-Hausman is significant it means that instrument is not weak
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
